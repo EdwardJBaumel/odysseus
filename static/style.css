@@ -2858,6 +2858,12 @@ body.bg-pattern-sparkles {
     .model-picker-list .model-switch-item:hover {
       background: color-mix(in srgb, var(--red) 8%, transparent);
     }
+    .model-picker-list .model-switch-item.model-switch-auto .mp-model-name {
+      font-weight: 500;
+    }
+    .model-picker-list .model-switch-item.model-switch-auto-unavailable {
+      cursor: default;
+    }
     .model-picker-list .model-switch-empty {
       display: flex;
       align-items: center;

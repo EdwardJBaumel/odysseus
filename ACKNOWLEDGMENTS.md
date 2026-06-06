@@ -119,6 +119,7 @@ Core (`requirements.txt`) and optional (`requirements-optional.txt`):
 | pytest / pytest-asyncio | MIT / Apache-2.0 |
 | duckduckgo-search (optional) | MIT |
 | markitdown (optional — Office/EPUB text extraction) | MIT |
+| split-stack / Local-LLM-Router (Auto Select local routing) | MIT |
 | **PyMuPDF** *(optional — form-filling only)* | **AGPL-3.0** — see note below |
 
 ## Companion services (interoperated with, not bundled)
@@ -156,6 +157,8 @@ concerns from earlier are resolved:
 - **`markitdown`** (Microsoft) is **MIT** and used only as an *optional* dependency for Office/EPUB text
   extraction (`src/markitdown_runtime.py`), lazy-imported with graceful fallback — the MIT core runs without
   it. The cloud `az-doc-intel` extra is deliberately **not** installed, keeping extraction fully local.
+- **`split-stack`** (Local-LLM-Router) is **MIT** and ships in `requirements.txt` for Auto Select routing
+  (`src/split_stack_runtime.py`, `src/auto_stack_router.py`), lazy-imported with graceful fallback if missing.
 
 ---
 

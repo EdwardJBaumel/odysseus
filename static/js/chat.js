@@ -22,6 +22,7 @@ import documentModule from './document.js';
 import * as emailInbox from './emailInbox.js';
 import codeRunnerModule from './codeRunner.js';
 import slashCommands, { initSlashCommands, isCommand, handleSlashCommand, handleSetupInput, handleSetupWizard, typewriterInto } from './slashCommands.js';
+import { getAutoStackReadiness, noteAutoResolvedModel } from './modelPicker.js';
 import createResearchSynapse from './researchSynapse.js';
 import { createStreamRenderer } from './streamingRenderer.js';
 import {
@@ -67,18 +68,52 @@ import {
   var _modelRouteLabel = chatRenderer.modelRouteLabel;
   var _sameModelName = chatRenderer.sameModelName;
   var _applyModelColor = chatRenderer.applyModelColor;
+  var _stampResolvedModel = chatRenderer.stampResolvedModel;
+  const AUTO_STACK_MODEL_ID = '__auto_stack__';
+  const AUTO_SELECTING_LABEL = 'Selecting model';
+
+  function _isAutoStackModel(modelName) {
+    return modelName === AUTO_STACK_MODEL_ID;
+  }
+
+  function _spinnerToGeneratingIfSelecting() {
+    if (spinner && spinner.element) {
+      spinner.updateMessage('Generating response');
+    }
+  }
+
+  function _noteHolderResolvedModel(holderEl, model) {
+    _stampResolvedModel(holderEl, model);
+  }
+
+  function _resolvedModelForHolder(holderEl, metricsData, sessionMeta) {
+    const fromHolder = holderEl?._resolvedModel || holderEl?.dataset?.resolvedModel;
+    if (fromHolder && !_isAutoStackModel(fromHolder)) return fromHolder;
+    if (metricsData?.resolved_model && !_isAutoStackModel(metricsData.resolved_model)) {
+      return metricsData.resolved_model;
+    }
+    if (metricsData?.model && !_isAutoStackModel(metricsData.model)) return metricsData.model;
+    if (sessionMeta?.model && !_isAutoStackModel(sessionMeta.model)) return sessionMeta.model;
+    return null;
+  }
+
   function _setRoleModelLabel(roleEl, requestedModel, actualModel, opts) {
     if (!roleEl) return;
     opts = opts || {};
     const tsSpan = roleEl.querySelector('.role-timestamp');
     const req = requestedModel || actualModel || '';
     const actual = actualModel || requestedModel || '';
-    let label = _modelRouteLabel(req, actual);
+    let label = _isAutoStackModel(req) && actual && !_isAutoStackModel(actual)
+      ? _shortModel(actual)
+      : _modelRouteLabel(req, actual);
     if (opts.suffix) label += ' (' + opts.suffix + ')';
     if (opts.characterName) label = opts.characterName;
     roleEl.textContent = label + ' ';
     _applyModelColor(roleEl, actual || req);
-    if (req && actual && !_sameModelName(req, actual)) {
+    if (_isAutoStackModel(req) && actual && !_isAutoStackModel(actual)) {
+      roleEl.title = AUTO_SELECTING_LABEL + ' → ' + actual;
+      _noteHolderResolvedModel(roleEl, actual);
+    } else if (req && actual && !_sameModelName(req, actual)) {
       roleEl.title = req + ' -> ' + actual + (opts.reason ? ': ' + opts.reason : '');
     } else if (!opts.reason) {
       roleEl.removeAttribute('title');
@@ -268,7 +303,7 @@ import {
       submitBtn.dataset.mode = 'streaming';
       submitBtn.dataset.phase = 'processing';
       isStreaming = true;
-      _startStallWatchdog();
+      _startStallWatchdog(sessionModule.getCurrentSessionId?.());
     } else if (state === 'idle') {
       submitBtn.dataset.mode = '';
       delete submitBtn.dataset.phase;
@@ -540,6 +575,18 @@ import {
           '- Open the model picker in the chat box and pick a model\n' +
           '- Use the `+` button in the model picker to add a model endpoint\n' +
           '- Use `/help` to see all available commands');
+        _releaseSendFlag();
+        return;
+      }
+    }
+
+    // Auto (Local LLMs): block send with a clear toast when models aren't ready.
+    const _sendModel = sessionModule.getCurrentModel?.() || '';
+    if (_sendModel === AUTO_STACK_MODEL_ID) {
+      const readiness = getAutoStackReadiness();
+      if (!readiness.ok) {
+        if (uiModule.showToast) uiModule.showToast(readiness.message);
+        else if (uiModule.showError) uiModule.showError(readiness.message);
         _releaseSendFlag();
         return;
       }
@@ -912,6 +959,7 @@ import {
       holder._researchQuery = msg; // Store query for notification text
       
       const modelName = sessionModule.getCurrentModel() || null;
+      const _isAutoStack = _isAutoStackModel(modelName);
 
       let loadingText = 'Initializing...';
 
@@ -924,17 +972,18 @@ import {
       } else if (el('research-toggle').checked) {
         loadingText = 'Deep research mode active...';
       } else {
-        loadingText = 'Processing request...';
+        loadingText = _isAutoStack ? 'Selecting model...' : 'Processing request...';
       }
 
-      var roleLabel = _modelRouteLabel(modelName, modelName);
+      var roleLabel = _isAutoStack ? AUTO_SELECTING_LABEL : _modelRouteLabel(modelName, modelName);
       var _charNameInit = presetsModule.getCharacterName ? presetsModule.getCharacterName() : '';
       if (_charNameInit) roleLabel = _charNameInit;
       const roleTs = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
       holder.innerHTML = `<div class="role">${uiModule.esc(roleLabel)} <span class="role-timestamp">${roleTs}</span></div><div class="body"></div>`;
       holder._requestedModel = modelName;
-      holder._actualModel = modelName;
-      _applyModelColor(holder.querySelector('.role'), modelName);
+      holder._actualModel = _isAutoStack ? null : modelName;
+      _applyModelColor(holder.querySelector('.role'), _isAutoStack ? null : modelName);
+      holder._awaitingAutoResolve = _isAutoStack;
       holder.style.position = 'relative';
       
       // Create spinner
@@ -951,6 +1000,8 @@ import {
       } else if (el('research-toggle').checked) {
         spinner.updateMessage('Researching');
         setTimeout(() => spinner.updateMessage('Analyzing sources'), 1500);
+      } else if (_isAutoStack) {
+        spinner.updateMessage(AUTO_SELECTING_LABEL);
       } else {
         spinner.updateMessage('Processing request');
         const endpointUrlForProbe = sessionModule.getCurrentEndpointUrl ? sessionModule.getCurrentEndpointUrl() : null;
@@ -1842,21 +1893,43 @@ import {
                   sessionModule.updateModelPicker();
                 }
                 continue;
-              } else if (json.type === 'model_info') {
-                // Update role label with model name as soon as we know it
-                if (!_isBg && holder) {
-                  const roleEl = holder.querySelector('.role');
-                  if (roleEl) {
-                    holder._requestedModel = json.requested_model || json.model || holder._requestedModel;
-                    holder._actualModel = json.model || holder._actualModel || holder._requestedModel;
-                    if (json.suffix) holder._roleSuffix = json.suffix;
-                    // Prepend character name if sent by server or set locally
+              } else if (json.type === 'model_info' || json.type === 'model_resolved') {
+                // Update role label with resolved upstream model (Auto stack may
+                // route to a different tag each agent round).
+                if (!_isBg) {
+                  var _targetHolder = (json.type === 'model_resolved' && roundHolder) ? roundHolder : holder;
+                  if (_targetHolder) {
+                    _targetHolder._awaitingAutoResolve = false;
+                    const _reqModel = json.requested_model
+                      || _targetHolder._requestedModel
+                      || (json.auto_stack ? AUTO_STACK_MODEL_ID : json.model);
+                    const _actModel = json.model || _targetHolder._actualModel || _reqModel;
+                    _targetHolder._requestedModel = _reqModel;
+                    _targetHolder._actualModel = _actModel;
+                    if (json.model) {
+                      _noteHolderResolvedModel(_targetHolder, json.model);
+                      if (!_isAutoStackModel(json.model)) _activeStreamModel = json.model;
+                      if (json.auto_stack || _isAutoStackModel(_reqModel)) {
+                        noteAutoResolvedModel(json.model);
+                      }
+                    }
+                    if (json.suffix) _targetHolder._roleSuffix = json.suffix;
                     var _charName = json.character_name || (presetsModule.getCharacterName ? presetsModule.getCharacterName() : '');
-                    if (_charName) holder._characterName = _charName;
-                    _setRoleModelLabel(roleEl, holder._requestedModel, holder._actualModel, {
-                      suffix: holder._roleSuffix,
-                      characterName: holder._characterName,
-                    });
+                    if (_charName) _targetHolder._characterName = _charName;
+                    const roleEl = _targetHolder.querySelector('.role');
+                    if (roleEl) {
+                      _setRoleModelLabel(roleEl, _reqModel, _actModel, {
+                        suffix: _targetHolder._roleSuffix,
+                        characterName: _targetHolder._characterName,
+                        reason: json.mode_label && json.auto_stack ? json.mode_label : undefined,
+                      });
+                    }
+                  }
+                  if (json.auto_stack || _isAutoStackModel(_reqModel)) {
+                    _spinnerToGeneratingIfSelecting();
+                  } else {
+                    const _noTextYet = roundHolder ? !roundText : !accumulated;
+                    if (_noTextYet) _spinnerToGeneratingIfSelecting();
                   }
                 }
               } else if (json.type === 'fallback') {
@@ -2013,13 +2086,23 @@ import {
                 metrics = json.data;
                 if (!_isBg && holder && metrics) {
                   holder._requestedModel = metrics.requested_model || holder._requestedModel || modelName;
-                  holder._actualModel = metrics.model || holder._actualModel || holder._requestedModel;
+                  const _resolved = metrics.resolved_model;
+                  const _actual = (_resolved && !_isAutoStackModel(_resolved))
+                    ? _resolved
+                    : (metrics.model && !_isAutoStackModel(metrics.model) ? metrics.model : holder._actualModel);
+                  holder._actualModel = _actual || holder._actualModel || holder._requestedModel;
                 }
-                if (metrics?.model) _activeStreamModel = metrics.model;
+                if (metrics?.resolved_model) _activeStreamModel = metrics.resolved_model;
+                else if (metrics?.model && !_isAutoStackModel(metrics.model)) _activeStreamModel = metrics.model;
                 if (_isBg) {
                   var bgM = _backgroundStreams.get(streamSessionId);
                   if (bgM) bgM.metrics = json.data;
                   continue;
+                }
+                const _stampTarget = roundHolder || holder;
+                if (metrics?.resolved_model) _noteHolderResolvedModel(_stampTarget, metrics.resolved_model);
+                else if (metrics?.model && !_isAutoStackModel(metrics.model)) {
+                  _noteHolderResolvedModel(_stampTarget, metrics.model);
                 }
 
               } else if (json.type === 'message_saved') {
@@ -2499,14 +2582,21 @@ import {
                 const newRole = document.createElement('div');
                 newRole.className = 'role';
                 const metaS = sessionModule.getSessions().find(s => s.id === streamSessionId);
-                const _roundRequested = holder?._requestedModel || metaS?.model;
+                const _sessModel = metaS?.model || '';
+                const _roundIsAutoStack = _isAutoStackModel(_sessModel);
+                const _roundRequested = holder?._requestedModel || _sessModel;
                 const _roundActual = holder?._actualModel || _roundRequested;
-                newRole.textContent = _modelRouteLabel(_roundRequested, _roundActual) || '';
-                _applyModelColor(newRole, _roundActual);
+                if (_roundIsAutoStack && !_roundActual) {
+                  newRole.textContent = AUTO_SELECTING_LABEL + ' ';
+                  _applyModelColor(newRole, null);
+                } else {
+                  _setRoleModelLabel(newRole, _roundRequested, _roundActual);
+                }
                 newWrap.appendChild(newRole);
                 const newBody = document.createElement('div');
                 newBody.className = 'body';
                 newWrap.appendChild(newBody);
+                if (_roundIsAutoStack) newWrap._awaitingAutoResolve = true;
                 box.appendChild(newWrap);
                 roundHolder = newWrap;
                 roundText = '';
@@ -2516,7 +2606,8 @@ import {
                 if (spinner && spinner.element) spinner.destroy();
                 // Show spinner while waiting for text (skip for research — has its own progress)
                 if (!_researchingStreamIds.has(streamSessionId)) {
-                  spinner = spinnerModule.create('Generating response', 'right', 'wave');
+                  const _spinLabel = _roundIsAutoStack ? AUTO_SELECTING_LABEL : 'Generating response';
+                  spinner = spinnerModule.create(_spinLabel, 'right', 'wave');
                   newBody.appendChild(spinner.createElement());
                   spinner.start();
                 }
@@ -2612,9 +2703,9 @@ import {
       const _isBgFinal = (sessionModule.getCurrentSessionId() !== streamSessionId) || _backgroundStreams.has(streamSessionId);
       if (!_isBgFinal) {
         finalMeta = sessionModule.getSessions().find(s => s.id === sessionModule.getCurrentSessionId());
-        const _finalActualModel = metrics?.model || holder._actualModel || finalMeta?.model;
+        const _finalResolved = _resolvedModelForHolder(holder, metrics, finalMeta);
+        const _finalActualModel = _finalResolved || metrics?.model || holder._actualModel || finalMeta?.model;
         const _finalRequestedModel = metrics?.requested_model || holder._requestedModel || finalMeta?.model || _finalActualModel;
-        // Prepend character name if set
         var _charNameFinal = presetsModule.getCharacterName ? presetsModule.getCharacterName() : '';
         const roleEl = holder.querySelector('.role');
         if (roleEl) {
@@ -3322,7 +3413,12 @@ import {
   }
 
   function _activeStreamModelName() {
-    return _activeStreamModel || sessionModule.getCurrentModel?.() || '';
+    let model = _activeStreamModel || sessionModule.getCurrentModel?.() || '';
+    if (_isAutoStackModel(model)) {
+      const _holder = currentHolder;
+      model = _holder?._resolvedModel || _holder?.dataset?.resolvedModel || model;
+    }
+    return model;
   }
 
   function _tryThinkingOnlyNudge(holder, accumulated, sessionId) {

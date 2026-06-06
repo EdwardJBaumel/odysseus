@@ -518,9 +518,137 @@ const IMAGE_PRICING = {
   'gpt-image-1-mini': { 'low': { '1024x1024': 0.005, '1024x1536': 0.006, '1536x1024': 0.006 }, 'medium': { '1024x1024': 0.011, '1024x1536': 0.015, '1536x1024': 0.015 }, 'high': { '1024x1024': 0.036, '1024x1536': 0.052, '1536x1024': 0.052 } },
 };
 
+const AUTO_STACK_MODEL_ID = '__auto_stack__';
+
+/** Per-message model for tooltips — prefers resolved upstream tag over Auto sentinel. */
+export function displayModelForMessage(modelName, metadata) {
+  const resolved = metadata?.resolved_model;
+  if (resolved && resolved !== AUTO_STACK_MODEL_ID) return resolved;
+  if (modelName && modelName !== AUTO_STACK_MODEL_ID) return modelName;
+  const metaModel = metadata?.model;
+  if (metaModel && metaModel !== AUTO_STACK_MODEL_ID) return metaModel;
+  return modelName || metaModel || null;
+}
+
+function _isUsableResolvedModel(name) {
+  return name && name !== AUTO_STACK_MODEL_ID;
+}
+
+/** Persist upstream model tag on a bubble for role header colors and tooltips. */
+export function stampResolvedModel(holderOrRole, modelName) {
+  if (!_isUsableResolvedModel(modelName)) return;
+  const wrap = holderOrRole?.closest
+    ? holderOrRole.closest('.msg-ai, .msg-continuation')
+    : null;
+  const roleEl = holderOrRole?.classList?.contains('role')
+    ? holderOrRole
+    : (holderOrRole?.querySelector?.('.role') || (wrap && wrap.querySelector('.role')));
+  const bubble = wrap || holderOrRole;
+  if (bubble) {
+    bubble._resolvedModel = modelName;
+    bubble.dataset.resolvedModel = modelName;
+  }
+  if (roleEl) {
+    roleEl._tooltipModel = modelName;
+    roleEl.dataset.resolvedModel = modelName;
+  }
+}
+
+function _effectiveTooltipModel(roleEl) {
+  if (!roleEl) return null;
+  const wrap = roleEl.closest('.msg-ai, .msg-continuation');
+  const candidates = [
+    roleEl._tooltipModel,
+    roleEl.dataset?.resolvedModel,
+    wrap?._resolvedModel,
+    wrap?.dataset?.resolvedModel,
+  ];
+  for (const c of candidates) {
+    if (_isUsableResolvedModel(c)) return c;
+  }
+  // Auto stack sets holder.title to "Auto (Local LLMs) → gemma4:e4b"
+  const title = wrap?.title || roleEl.title || '';
+  const arrow = title.indexOf('→');
+  if (arrow >= 0) {
+    const parsed = title.slice(arrow + 1).trim();
+    if (_isUsableResolvedModel(parsed)) return parsed;
+  }
+  return null;
+}
+
+function _noteResolvedModel(roleEl, modelName) {
+  stampResolvedModel(roleEl, modelName);
+}
+
+function _showRoleModelInfoPopup(roleEl) {
+  const modelName = _effectiveTooltipModel(roleEl);
+  if (!modelName) return;
+  document.querySelectorAll('.ctx-popup').forEach(p => { if (typeof p._dismiss === 'function') p._dismiss(); else p.remove(); });
+  const info = getModelInfo(modelName);
+  const short = shortModel(modelName);
+  const logoHtml = providerLogo(modelName);
+  const popup = document.createElement('div');
+  popup.className = 'ctx-popup';
+  let html = '<div style="font-weight:600;margin-bottom:6px;color:var(--fg);display:flex;align-items:center;gap:6px;">';
+  if (logoHtml) html += '<span class="role-provider-logo" style="opacity:0.7">' + logoHtml + '</span>';
+  html += short + '</div>';
+  html += '<div><span class="ctx-label">Model</span> ' + uiModule.esc(modelName.split('/').pop()) + '</div>';
+  const _epUrl = (window.sessionModule && window.sessionModule.getCurrentEndpointUrl)
+    ? window.sessionModule.getCurrentEndpointUrl() : null;
+  const _provLabel = providerLabel(_epUrl);
+  if (_provLabel) html += '<div><span class="ctx-label">Provider</span> ' + uiModule.esc(_provLabel) + '</div>';
+  const _realCtx = window._realContextLengths && window._realContextLengths[modelName];
+  if (_realCtx) {
+    html += '<div><span class="ctx-label">Context</span> ' + _fmtCtx(_realCtx) + ' tokens';
+    if (info && info.ctx && info.ctx !== _realCtx) html += ' <span style="opacity:0.35">(spec: ' + _fmtCtx(info.ctx) + ')</span>';
+    html += '</div>';
+  } else if (info && info.ctx) {
+    html += '<div><span class="ctx-label">Context</span> <span id="_ctx-val">' + _fmtCtx(info.ctx) + ' tokens</span></div>';
+  }
+  if (!_realCtx && window.sessionModule) {
+    const _sid = window.sessionModule.getCurrentSessionId();
+    if (_sid) {
+      fetch('/api/session/' + _sid + '/context_info').then(r => r.ok ? r.json() : null).then(d => {
+        if (d && d.context_length) {
+          if (!window._realContextLengths) window._realContextLengths = {};
+          window._realContextLengths[modelName] = d.context_length;
+          const el = document.getElementById('_ctx-val');
+          if (el) {
+            el.innerHTML = _fmtCtx(d.context_length) + ' tokens';
+            if (info && info.ctx && info.ctx !== d.context_length) {
+              el.innerHTML += ' <span style="opacity:0.35">(spec: ' + _fmtCtx(info.ctx) + ')</span>';
+            }
+          }
+        }
+      }).catch(() => {});
+    }
+  }
+  if (window.presetsModule) {
+    const _pid = window.presetsModule.getSelectedPreset();
+    const _preset = _pid ? window.presetsModule.getPreset(_pid) : null;
+    const _mt = _preset?.max_tokens;
+    if (_mt && _mt > 0 && _mt <= 8192) {
+      html += '<div><span class="ctx-label">Max tokens</span> ' + _mt.toLocaleString() + ' <span style="opacity:0.4">(configured)</span></div>';
+    }
+  }
+  if (info && info.input != null) html += '<div><span class="ctx-label">Input</span> $' + info.input.toFixed(2) + ' / 1M</div>';
+  if (info && info.output != null) html += '<div><span class="ctx-label">Output</span> $' + info.output.toFixed(2) + ' / 1M</div>';
+  if (!info) html += '<div style="opacity:0.4;font-size:0.85em;margin-top:4px;">No pricing data available</div>';
+  popup.innerHTML = html;
+  const rect = roleEl.getBoundingClientRect();
+  popup.style.top = (rect.bottom + 4) + 'px';
+  popup.style.left = rect.left + 'px';
+  document.body.appendChild(popup);
+  const pr = popup.getBoundingClientRect();
+  if (pr.bottom > window.innerHeight - 8) popup.style.top = (rect.top - pr.height - 4) + 'px';
+  if (pr.right > window.innerWidth - 8) popup.style.left = (window.innerWidth - pr.width - 8) + 'px';
+  bindMenuDismiss(popup, () => popup.remove());
+}
+
 export function shortModel(name) {
   if (!name) return '...';
   if (typeof name !== 'string') name = String(name);
+  if (name === AUTO_STACK_MODEL_ID) return 'Auto (Local LLMs)';
   let short = name.split('/').pop();
   // Strip .gguf extension
   short = short.replace(/\.gguf$/i, '');
@@ -600,98 +728,39 @@ function _fmtCtx(n) {
 
 /**
  * Apply model color to a role element (sets color + dot color).
+ * Tooltip reads the resolved model at click time (see _effectiveTooltipModel).
  */
 export function applyModelColor(roleEl, modelName) {
-  if (!modelName) return;
-  const color = modelColor(modelName);
-  if (color) {
-    roleEl.style.color = color;
-    roleEl.style.setProperty('--model-dot', color);
-  }
-  // Replace generic dot with provider logo if available
-  const logo = providerLogo(modelName);
-  const existingLogo = roleEl.querySelector('.role-provider-logo');
-  if (!logo) {
+  _noteResolvedModel(roleEl, modelName);
+  const colorModel = _effectiveTooltipModel(roleEl)
+    || (_isUsableResolvedModel(modelName) ? modelName : null);
+  if (colorModel) {
+    const color = modelColor(colorModel);
+    if (color) {
+      roleEl.style.color = color;
+      roleEl.style.setProperty('--model-dot', color);
+    }
+    const logo = providerLogo(colorModel);
+    if (logo && !roleEl.querySelector('.role-provider-logo')) {
+      const span = document.createElement('span');
+      span.className = 'role-provider-logo';
+      span.innerHTML = logo;
+      roleEl.classList.add('has-logo');
+      roleEl.prepend(span);
+    }
+  } else {
+    roleEl.style.removeProperty('color');
+    roleEl.style.removeProperty('--model-dot');
+    const existingLogo = roleEl.querySelector('.role-provider-logo');
     if (existingLogo) existingLogo.remove();
     roleEl.classList.remove('has-logo');
-  } else if (!existingLogo) {
-    const span = document.createElement('span');
-    span.className = 'role-provider-logo';
-    span.innerHTML = logo;
-    roleEl.classList.add('has-logo');
-    roleEl.prepend(span);
   }
-  // Click to show model info popup
   if (!roleEl._hasInfoClick) {
     roleEl._hasInfoClick = true;
     roleEl.style.cursor = 'pointer';
     roleEl.addEventListener('click', (e) => {
       e.stopPropagation();
-      document.querySelectorAll('.ctx-popup').forEach(p => { if (typeof p._dismiss === 'function') p._dismiss(); else p.remove(); });
-      const info = getModelInfo(modelName);
-      const short = shortModel(modelName);
-      const logoHtml = providerLogo(modelName);
-      const popup = document.createElement('div');
-      popup.className = 'ctx-popup';
-      let html = '<div style="font-weight:600;margin-bottom:6px;color:var(--fg);display:flex;align-items:center;gap:6px;">';
-      if (logoHtml) html += '<span class="role-provider-logo" style="opacity:0.7">' + logoHtml + '</span>';
-      html += short + '</div>';
-      html += '<div><span class="ctx-label">Model</span> ' + modelName.split('/').pop() + '</div>';
-      // Provider = the serving endpoint, distinct from the model vendor/logo
-      // (e.g. the same model via OpenRouter vs Copilot vs Anthropic direct).
-      const _epUrl = (window.sessionModule && window.sessionModule.getCurrentEndpointUrl)
-        ? window.sessionModule.getCurrentEndpointUrl() : null;
-      const _provLabel = providerLabel(_epUrl);
-      if (_provLabel) html += '<div><span class="ctx-label">Provider</span> ' + uiModule.esc(_provLabel) + '</div>';
-      // Show static context initially, then fetch real from server
-      const _realCtx = window._realContextLengths && window._realContextLengths[modelName];
-      if (_realCtx) {
-        html += '<div><span class="ctx-label">Context</span> ' + _fmtCtx(_realCtx) + ' tokens';
-        if (info && info.ctx && info.ctx !== _realCtx) html += ' <span style="opacity:0.35">(spec: ' + _fmtCtx(info.ctx) + ')</span>';
-        html += '</div>';
-      } else if (info && info.ctx) {
-        html += '<div><span class="ctx-label">Context</span> <span id="_ctx-val">' + _fmtCtx(info.ctx) + ' tokens</span></div>';
-      }
-      // Fetch real context from server async
-      if (!_realCtx && window.sessionModule) {
-        const _sid = window.sessionModule.getCurrentSessionId();
-        if (_sid) {
-          fetch('/api/session/' + _sid + '/context_info').then(r => r.ok ? r.json() : null).then(d => {
-            if (d && d.context_length) {
-              if (!window._realContextLengths) window._realContextLengths = {};
-              window._realContextLengths[modelName] = d.context_length;
-              const el = document.getElementById('_ctx-val');
-              if (el) {
-                el.innerHTML = _fmtCtx(d.context_length) + ' tokens';
-                if (info && info.ctx && info.ctx !== d.context_length) {
-                  el.innerHTML += ' <span style="opacity:0.35">(spec: ' + _fmtCtx(info.ctx) + ')</span>';
-                }
-              }
-            }
-          }).catch(() => {});
-        }
-      }
-      // Show configured max tokens if set
-      if (window.presetsModule) {
-        const _pid = window.presetsModule.getSelectedPreset();
-        const _preset = _pid ? window.presetsModule.getPreset(_pid) : null;
-        const _mt = _preset?.max_tokens;
-        if (_mt && _mt > 0 && _mt <= 8192) {
-          html += '<div><span class="ctx-label">Max tokens</span> ' + _mt.toLocaleString() + ' <span style="opacity:0.4">(configured)</span></div>';
-        }
-      }
-      if (info && info.input != null) html += '<div><span class="ctx-label">Input</span> $' + info.input.toFixed(2) + ' / 1M</div>';
-      if (info && info.output != null) html += '<div><span class="ctx-label">Output</span> $' + info.output.toFixed(2) + ' / 1M</div>';
-      if (!info) html += '<div style="opacity:0.4;font-size:0.85em;margin-top:4px;">No pricing data available</div>';
-      popup.innerHTML = html;
-      const rect = roleEl.getBoundingClientRect();
-      popup.style.top = (rect.bottom + 4) + 'px';
-      popup.style.left = rect.left + 'px';
-      document.body.appendChild(popup);
-      const pr = popup.getBoundingClientRect();
-      if (pr.bottom > window.innerHeight - 8) popup.style.top = (rect.top - pr.height - 4) + 'px';
-      if (pr.right > window.innerWidth - 8) popup.style.left = (window.innerWidth - pr.width - 8) + 'px';
-      bindMenuDismiss(popup, () => popup.remove());
+      _showRoleModelInfoPopup(roleEl);
     });
   }
 }
@@ -1666,7 +1735,13 @@ export function displayMetrics(messageElement, metrics) {
   const tps = metrics.tokens_per_second;
   const isReal = metrics.usage_source === 'real';
   const ctxPct = metrics.context_percent;
-  const model = metrics.model || 'Unknown';
+  let model = metrics.model || 'Unknown';
+  if (model === AUTO_STACK_MODEL_ID) {
+    const bubbleModel = messageElement._resolvedModel
+      || messageElement.dataset?.resolvedModel
+      || metrics.resolved_model;
+    if (_isUsableResolvedModel(bubbleModel)) model = bubbleModel;
+  }
   const cost = _billableCost(model, inputTokens, outputTokens);
 
   // Nothing useful to show — bail out (only if ALL metrics are missing)
@@ -1971,8 +2046,10 @@ export function addMessage(role, content, modelName, metadata) {
           const roleEl = document.createElement('div');
           roleEl.className = 'role';
           const pair = replyModelPair(modelName, metadata);
-          const contModel = pair.actualModel || pair.requestedModel;
-          roleEl.textContent = modelRouteLabel(pair.requestedModel, contModel);
+          const contModel = displayModelForMessage(modelName, metadata) || pair.actualModel || pair.requestedModel;
+          roleEl.textContent = (pair.requestedModel && contModel && !sameModelName(pair.requestedModel, contModel))
+            ? modelRouteLabel(pair.requestedModel, contModel)
+            : shortModel(contModel);
           if (pair.requestedModel && contModel && !sameModelName(pair.requestedModel, contModel)) {
             roleEl.title = pair.requestedModel + ' -> ' + contModel;
           }
@@ -2004,6 +2081,7 @@ export function addMessage(role, content, modelName, metadata) {
           wrap.appendChild(body);
           wrap.dataset.raw = txt;
           if (metadata?._db_id) wrap.dataset.dbId = metadata._db_id;
+          stampResolvedModel(wrap, contModel);
           box.appendChild(wrap);
           lastWrap = wrap;
           if (!firstMsgAi) firstMsgAi = wrap;
@@ -2099,8 +2177,11 @@ export function addMessage(role, content, modelName, metadata) {
     const isSlash = metadata?.source === 'slash';
     const isCompacted = metadata?.compacted;
     const replyModels = replyModelPair(modelName, metadata);
-    const resolvedModel = replyModels.actualModel || replyModels.requestedModel;
-    var _roleText = role === 'user' ? 'You' : (isSlash || isCompacted) ? 'Odysseus' : modelRouteLabel(replyModels.requestedModel, resolvedModel);
+    const resolvedModel = displayModelForMessage(modelName, metadata) || replyModels.actualModel || replyModels.requestedModel;
+    var _roleText = role === 'user' ? 'You' : (isSlash || isCompacted) ? 'Odysseus'
+      : (replyModels.requestedModel && resolvedModel && !sameModelName(replyModels.requestedModel, resolvedModel))
+        ? modelRouteLabel(replyModels.requestedModel, resolvedModel)
+        : shortModel(resolvedModel);
     if (role === 'assistant' && (metadata?.research || metadata?.research_clarification)) {
       _roleText += ' (Research)';
     }
@@ -2120,6 +2201,7 @@ export function addMessage(role, content, modelName, metadata) {
 
     const b = document.createElement('div');
     b.className = 'body';
+    if (role !== 'user') stampResolvedModel(wrap, resolvedModel);
 
     let text = markdownModule.squashOutsideCode(stripToolBlocks(textRaw || ''));
 

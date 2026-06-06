@@ -1531,6 +1531,11 @@ async def do_manage_settings(content: str, owner: Optional[str] = None) -> Dict:
             "default endpoint": "default_endpoint_id",
             "task model": "task_model", "background model": "task_model",
             "teacher model": "teacher_model", "teacher": "teacher_enabled",
+            "auto select": "default_model", "auto local llms": "default_model",
+            "local llm router": "default_model",
+            "local-llm-router": "default_model",
+            "stack vram": "auto_stack_vram_gb", "auto stack vram": "auto_stack_vram_gb",
+            "stack quant": "auto_stack_quant", "auto stack quant": "auto_stack_quant",
             "utility model": "utility_model", "research model": "research_model",
             "research max tokens": "research_max_tokens",
             "vision model": "vision_model", "vision": "vision_enabled",
@@ -2111,13 +2116,6 @@ async def do_manage_calendar(content: str, owner: Optional[str] = None) -> Dict:
         """Parse agent event datetimes in the user's timezone when available."""
         return _parse_dt_pair(parse_due_for_user(raw))
 
-    def _first_nonempty_arg(*names: str):
-        for name in names:
-            value = args.get(name)
-            if value not in (None, ""):
-                return value
-        return None
-
     def _create_calendar_reminder(summary: str, location: str, dtstart: datetime,
                                   all_day: bool, minutes_before: int,
                                   is_utc: bool = False) -> tuple[Optional[str], Optional[str]]:
@@ -2175,18 +2173,12 @@ async def do_manage_calendar(content: str, owner: Optional[str] = None) -> Dict:
 
         elif action == "list_events":
             try:
-                start_raw = _first_nonempty_arg(
-                    "start", "start_date", "range_start", "from", "dtstart", "since"
-                )
-                end_raw = _first_nonempty_arg(
-                    "end", "end_date", "range_end", "to", "dtend", "until"
-                )
-                if start_raw:
-                    start_dt = _parse_dt(start_raw)
+                if args.get("start"):
+                    start_dt = _parse_dt(args["start"])
                 else:
                     start_dt = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-                if end_raw:
-                    end_dt = _parse_dt(end_raw)
+                if args.get("end"):
+                    end_dt = _parse_dt(args["end"])
                 else:
                     end_dt = start_dt + timedelta(days=14)
             except ValueError as e:

@@ -927,6 +927,7 @@ def setup_shell_routes() -> APIRouter:
             {"name": "realesrgan", "pip": "realesrgan", "desc": "AI denoise + upscale (Real-ESRGAN). Used by editor's Denoise and Upscale tools.", "category": "Image", "target": "local"},
             # ── Tools ──
             {"name": "playwright", "pip": "playwright", "desc": "Browser automation for web tools", "category": "Tools", "target": "local"},
+            {"name": "local_llm_router", "pip": "local-llm-router[ollama]", "desc": "Local-LLM-Router — Auto Select routing across your local model stack", "category": "LLM", "target": "local"},
         ]
         # Remote check: for remote-target packages, probe the selected server's
         # venv over SSH so a remote `pip install` actually reflects here.
@@ -1055,6 +1056,7 @@ def setup_shell_routes() -> APIRouter:
             "rembg[gpu]", "hf_transfer", "llama-cpp-python[server]", "sglang[all]", "diffusers", "diffusers[torch]",
             "TTS", "bark", "faster-whisper", "playwright", "realesrgan", "gfpgan",
             "insightface", "onnxruntime-gpu", "onnxruntime", "hdbscan", "vllm",
+            "local-llm-router[ollama]",
         }
         if pip_name not in known:
             return {"ok": False, "error": f"Unknown package: {pip_name}"}

@@ -67,7 +67,6 @@ The block executes automatically and you see the output."""
 _AGENT_RULES = """\
 ## Rules
 - Only use tools when needed. Don't search for things you already know.
-- For web lookup/search/latest/current requests, use `web_search` or `web_fetch`. Do NOT use `bash`, `python`, `curl`, `requests`, or scraping code for web lookup unless web tools are disabled or already failed.
 - These exact tags execute automatically. For showing code examples, use ```shell, ```sh, ```py, etc. instead.
 - Multiple tool blocks per response OK. 60s timeout per tool, 10K char output limit.
 - Code/content >15 lines → ```create_document (NOT in chat). Short snippets OK in chat.
@@ -114,7 +113,6 @@ _API_AGENT_RULES = """\
 - Prefer native tool/function calling when tools are needed.
 - Only call tools when they materially help answer the request.
 - You MUST use tools to take action — do not describe what you would do. Act, don't narrate.
-- For web lookup/search/latest/current requests, call `web_search` or `web_fetch`. Do NOT use shell, Python, curl, requests, or scraping code for web lookup unless web tools are unavailable or already failed.
 - Keep answers concise unless the user asks for depth.
 - For long code or content, use document tools instead of pasting large blocks into chat.
 - Editing an existing document: ALWAYS use `edit_document` with find/replace. Only use `update_document` for genuine full rewrites (>50% changed) — do NOT echo the entire file back for small edits.
@@ -178,8 +176,7 @@ TOOL_SECTIONS = {
 ```bash
 <shell command>
 ```
-Run any shell command. Output is returned to you. Use for: installing packages, checking files, git, system info, process management, etc.
-Do NOT use bash/curl for web lookup/search/latest/current requests when `web_search` or `web_fetch` is available.
+Run any shell command. Output is returned to you. Use for: installing packages, checking files, git, curl, system info, etc.
 NEVER use bash to create or change files — no `>`/`>>` redirects, no heredocs (`cat > f << 'EOF'`), no `tee`, `sed -i`, `awk -i`, no `python -c` that writes. To CREATE or fully rewrite a file use `write_file`; to change part of an existing file use `edit_file`. Those show a diff and are the ONLY allowed way to write files. (bash is for read-only inspection: `ls`, `cat` to READ, `grep`, `git status`/`git diff`, builds, installs.)
 For LONG-running commands (package installs, pip/npm, ffmpeg, model downloads, training, builds — anything that may take more than ~20s), make the FIRST line `#!bg` to run it in the BACKGROUND. You get a job id back immediately and are automatically re-invoked with the full output when it finishes — so you never block the chat waiting. Example:
 ```bash
@@ -193,8 +190,7 @@ NEVER pipe multi-line Python through `python -c "..."` — shell quoting eats re
 ```python
 <python code>
 ```
-Execute Python code. Use for computation, data processing, scripting. NOT for writing code for the user (use create_document for that). Same sandbox limits as bash — no TTY, no GUI, no `input()`; for anything the user should interact with, generate a single HTML file with inline JS instead.
-Do NOT use Python/requests for web lookup/search/latest/current requests when `web_search` or `web_fetch` is available.""",
+Execute Python code. Use for computation, data processing, scripting. NOT for writing code for the user (use create_document for that). Same sandbox limits as bash — no TTY, no GUI, no `input()`; for anything the user should interact with, generate a single HTML file with inline JS instead.""",
 
     "web_search": """\
 ```web_search
@@ -204,8 +200,7 @@ Or with JSON for fresh news:
 ```web_search
 {"query": "<your query>", "time_filter": "day"}
 ```
-Search the web for a SINGLE quick fact/lookup mid-task. For news / "today" / "latest" queries, pass `time_filter` ("day", "week", "month", or "year"). NOT for "research X" / "do research on X" / "look into X" requests — those mean a multi-source DEEP RESEARCH job: use `trigger_research` instead (it runs in the Deep Research sidebar and produces a full report). web_search = one quick query; trigger_research = a researched report.
-Use this instead of `bash`, `curl`, `python`, `requests`, or scraping code for web lookup/search/latest/current requests.""",
+Search the web for a SINGLE quick fact/lookup mid-task. For news / "today" / "latest" queries, pass `time_filter` ("day", "week", "month", or "year"). NOT for "research X" / "do research on X" / "look into X" requests — those mean a multi-source DEEP RESEARCH job: use `trigger_research` instead (it runs in the Deep Research sidebar and produces a full report). web_search = one quick query; trigger_research = a researched report.""",
 
     "web_fetch": """\
 ```web_fetch
@@ -328,7 +323,6 @@ Bulk delete/archive/mark emails. Use this for "delete all those" after listing e
 {"action": "create_event", "summary": "<event title>", "dtstart": "<natural language or ISO datetime>"}
 ```
 Calendar event management (CalDAV). Actions: `list_events`, `create_event`, `update_event`, `delete_event`, `list_calendars`. \
-For `list_events`: {start?, end?, calendar?}; prefer `start`/`end` for the range, though start_date/end_date and from/to aliases are accepted. \
 For `create_event`: {summary, dtstart, dtend?, duration?, calendar?, location?, description?, reminder_minutes?, rrule?}. \
 `dtstart` accepts natural language ("tomorrow at 1pm", "in 2 hours", "next monday 9am") or ISO ("2026-05-12T13:00:00"). \
 If `dtend` omitted, defaults to dtstart+1h (or +1d when `all_day: true`). \
@@ -1447,6 +1441,8 @@ async def stream_agent_loop(
     plan_mode: bool = False,
     approved_plan: Optional[str] = None,
     _is_teacher_run: bool = False,
+    auto_stack_active: bool = False,
+    auto_stack_anchor_url: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -1553,72 +1549,8 @@ async def stream_agent_loop(
     prep_timings["tool_selection"] = time.time() - _t1
 
     _t2 = time.time()
-    # Hosted-API match by URL, OR the model name looks like a recent model
-    # known to follow OpenAI-style function calling (DeepSeek, GPT*, Claude,
-    # Gemini, Qwen3+, Mixtral, Llama 3.1+). Caught the DeepSeek-via-local-
-    # vLLM case where endpoint_url doesn't include a vendor host.
-    _model_lc = (model or "").lower()
-    # Step 1: per-endpoint override (set at registration time from the
-    # serve command — `--enable-auto-tool-choice` flips it on. UI can
-    # also toggle per endpoint). NULL = unknown; for local Ollama /v1 we
-    # default to fenced tools, otherwise fall through to keyword + host checks.
-    _endpoint_supports: Optional[bool] = None
-    try:
-        from core.database import SessionLocal as _SL, ModelEndpoint as _ME
-        _db = _SL()
-        try:
-            _ep = None
-            for _key in _endpoint_lookup_keys(endpoint_url):
-                _ep = _db.query(_ME).filter(_ME.base_url == _key).first()
-                if _ep is not None:
-                    break
-            if _ep is not None:
-                _endpoint_supports = _ep.supports_tools
-        finally:
-            _db.close()
-    except Exception as _e:
-        logger.debug(f"endpoint supports_tools lookup failed: {_e}")
-    _model_supports_tools = any(kw in _model_lc for kw in (
-        "gpt-4", "gpt-5", "gpt-o", "claude", "gemini", "gemma",
-        "qwen3", "qwen2.5", "mixtral", "mistral", "llama-3.1", "llama-3.2",
-        "llama-3.3", "llama-4",
-        # Local-served models that follow OpenAI-style function calling
-        # via vLLM's `--enable-auto-tool-choice`. Belt-and-suspenders
-        # with the per-endpoint flag above.
-        "minimax", "kimi", "yi-", "phi-3", "phi-4", "command-r",
-        "glm-4", "internlm", "hermes",
-        # deepseek-v2/v3/chat support tools via the cloud API; deepseek-r1
-        # (reasoning model) does not — handled by the blocklist below.
-        "deepseek-v", "deepseek-chat",
-    ))
-    # Models known to reject tool schemas at the Ollama/local level even when
-    # the endpoint URL would otherwise enable native function calling.
-    # The per-endpoint supports_tools flag (True/False) always takes priority
-    # and can override this list for users who know their setup.
-    _model_no_tools = any(kw in _model_lc for kw in (
-        "deepseek-r1",
-    ))
-    # Native Ollama endpoints (/api/chat) handle tool schemas differently from
-    # the OpenAI-compat path. Models like gemma4, qwen3.5, ministral respond to
-    # tool schemas by emitting a single native tool_call token then stopping,
-    # rather than writing a fenced block — the agent loop sees 1 token and no
-    # recognised tool, so the round terminates immediately (issue #1567).
-    # Unless the endpoint is explicitly marked supports_tools=True by the user
-    # (via the endpoint settings toggle), treat Ollama-native as text-only so
-    # the fenced-block path is used instead of native function calling.
-    _is_ollama_native = _is_ollama_native_url(endpoint_url or "")
-    _ollama_openai_compat = _is_ollama_openai_compat_url(endpoint_url or "")
-    if _endpoint_supports is True:
-        _is_api_model = True
-    elif (
-        _endpoint_supports is False
-        or _model_no_tools
-        or _is_ollama_native
-        or _ollama_openai_compat
-    ):
-        _is_api_model = False
-    else:
-        _is_api_model = any(h in endpoint_url for h in _API_HOSTS) or _model_supports_tools
+    from src.agent_model_mode import compute_is_api_model
+    _is_api_model = compute_is_api_model(endpoint_url, model)
     messages, mcp_schemas = _build_system_prompt(
         messages, model, active_document, mcp_mgr, disabled_tools,
         needs_admin=_needs_admin, relevant_tools=_relevant_tools,
@@ -1787,6 +1719,7 @@ async def stream_agent_loop(
     # using tools — i.e. it was cut off, not finished. Drives a "Continue" event
     # so the user can resume instead of the turn silently stalling.
     _exhausted_rounds = False
+    _anchor_url = auto_stack_anchor_url or endpoint_url
 
     for round_num in range(1, max_rounds + 1):
         round_response = ""
@@ -1801,6 +1734,42 @@ async def stream_agent_loop(
         # fenced block closes we advance this so the next iteration can
         # detect a SUBSEQUENT block in the same round.
         _doc_scan_from = 0
+
+        _round_stack_fb = list(fallbacks or [])
+        if auto_stack_active:
+            from src.auto_stack_router import (
+                hint_for_agent_round,
+                resolve_auto_stack,
+                stack_fallback_candidates,
+            )
+            try:
+                _route_prompt = _extract_last_user_message(messages) or ""
+                _as_hint = hint_for_agent_round(
+                    prompt=_route_prompt,
+                    relevant_tools=_relevant_tools,
+                )
+                _as_res = resolve_auto_stack(
+                    prompt=_route_prompt,
+                    endpoint_url=_anchor_url,
+                    headers=headers,
+                    owner=owner,
+                    hint=_as_hint,
+                )
+                endpoint_url = _as_res.endpoint_url
+                model = _as_res.model
+                headers = _as_res.headers
+                _is_api_model = compute_is_api_model(endpoint_url, model)
+                _round_stack_fb = stack_fallback_candidates(
+                    _as_res,
+                    endpoint_url=_anchor_url,
+                    headers=headers,
+                    owner=owner,
+                )
+                from src.constants import AUTO_SELECT_LABEL, AUTO_STACK_MODEL_ID
+                yield f'data: {json.dumps({"type": "model_resolved", "model": model, "requested_model": AUTO_STACK_MODEL_ID, "tier": _as_res.tier, "round": round_num, "auto_stack": True, "mode_label": AUTO_SELECT_LABEL})}\n\n'
+            except Exception as _as_err:
+                yield f'event: error\ndata: {json.dumps({"error": f"Auto (Local LLMs): {_as_err}"})}\n\n'
+                break
 
         # Merge native tool schemas with MCP tool schemas, filtering out
         # Only send function schemas for API models (OpenAI, Anthropic, etc.).
@@ -1847,7 +1816,7 @@ async def stream_agent_loop(
         # Primary target + any configured fallback models. stream_llm_with_fallback
         # only switches on a pre-content failure, so streamed output is never
         # duplicated; the dead-host cooldown keeps repeat primary attempts cheap.
-        _candidates = [(endpoint_url, model, headers)] + list(fallbacks or [])
+        _candidates = [(endpoint_url, model, headers)] + list(_round_stack_fb)
         # stream_llm enforces a per-read INACTIVITY timeout (httpx read=timeout),
         # which kills a wedged/silent endpoint. This wall-clock deadline is the
         # complementary cap for the rare stream that trickles bytes forever and

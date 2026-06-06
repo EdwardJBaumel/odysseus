@@ -132,6 +132,10 @@ DEFAULT_SETTINGS = {
     "utility_model_fallbacks": [],
     "teacher_model": "",
     "teacher_enabled": False,
+    # Local-LLM-Router (split-stack) — Auto Select routing (see auto_stack_router.py)
+    "auto_stack_vram_gb": 0,  # 0 = detect via hwfit
+    "auto_stack_quant": "qat",
+    "auto_stack_models": [],
     # Skills: minimum self-reported confidence for an auto-written (LLM-authored)
     # DRAFT skill to be injected into the agent prompt. Published skills always
     # qualify. Keeps low-confidence auto-skills out of context until they're

@@ -43,3 +43,5 @@ qrcode[pil]
 croniter
 pytest
 pytest-asyncio
+# Local-LLM-Router — Auto Select per-step local routing (MIT).
+local-llm-router[ollama]
