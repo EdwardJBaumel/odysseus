@@ -49,6 +49,7 @@ from src.auto_stack_router import (
     stack_fallback_candidates,
 )
 from src.split_stack_runtime import SPLIT_STACK_MISSING, split_stack_available
+from src.constants import AUTO_SELECT_LABEL
 
 logger = logging.getLogger(__name__)
 
@@ -881,7 +882,7 @@ def setup_chat_routes(
                         endpoint_url=sess.endpoint_url,
                         headers=sess.headers,
                         owner=_user,
-                        mode="chat",
+                        mode=chat_mode if chat_mode in ("chat", "agent") else "chat",
                     )
                 except Exception as exc:
                     yield f'data: {json.dumps({"delta": f"Auto (Local LLMs): {exc}"})}\n\n'
@@ -891,7 +892,6 @@ def setup_chat_routes(
 
             # Send model name early so the frontend can show it during streaming
             _model_suffix = "Research" if do_research else None
-            from src.constants import AUTO_SELECT_LABEL
             if _auto_res:
                 _display_model = _auto_res.model
                 _model_info = {
@@ -1105,26 +1105,6 @@ def setup_chat_routes(
                     except (TypeError, ValueError):
                         _max_rounds = _DEFAULT_ROUNDS
                     _max_rounds = max(1, min(_max_rounds, 200))
-
-                    # Resolve Auto before agent prep (tool RAG, context trim) so the
-                    # UI can show the real model while "Selecting model..." spins.
-                    if _auto_stack:
-                        try:
-                            from src.auto_stack_router import resolve_auto_stack
-                            from src.constants import AUTO_SELECT_LABEL
-                            _agent_auto_res = resolve_auto_stack(
-                                prompt=message or "",
-                                endpoint_url=sess.endpoint_url,
-                                headers=sess.headers,
-                                owner=_user,
-                                mode="agent",
-                            )
-                            yield f'data: {json.dumps({"type": "model_info", "model": _agent_auto_res.model, "requested_model": sess.model, "auto_stack": True, "tier": _agent_auto_res.tier, "mode_label": AUTO_SELECT_LABEL, "route_reasons": list(_agent_auto_res.route_reasons)})}\n\n'
-                        except Exception as exc:
-                            yield f'data: {json.dumps({"delta": f"Auto (Local LLMs): {exc}"})}\n\n'
-                            yield "data: [DONE]\n\n"
-                            _active_streams.pop(session, None)
-                            return
 
                     async for chunk in stream_agent_loop(
                         sess.endpoint_url,
