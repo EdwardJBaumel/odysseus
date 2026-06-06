@@ -159,18 +159,43 @@ def resolve_model_on_endpoint(
     return chat_url, matched, hdrs
 
 
+def _vram_gb_from_hwfit(system: dict) -> float:
+    """Per-GPU VRAM for routing — Ollama loads one model on one device.
+
+    hwfit's gpu_vram_gb is often *total* across cards; use the largest
+    homogeneous pool's vram_each when available (matches Cookbook hwfit).
+    """
+    groups = system.get("gpu_groups") or []
+    if groups:
+        each = groups[0].get("vram_each")
+        if each:
+            return float(each)
+    gpus = system.get("gpus") or []
+    if gpus:
+        return max(float(g.get("vram_gb") or 0) for g in gpus)
+    return float(system.get("gpu_vram_gb") or 0)
+
+
 def _detect_vram_gb() -> int:
     manual = int(get_setting("auto_stack_vram_gb", 0) or 0)
     if manual > 0:
         return manual
     try:
         from services.hwfit.hardware import detect_system
-        system = detect_system()
-        vram = float(system.get("gpu_vram_gb") or 0)
+        system = detect_system() or {}
+        vram = _vram_gb_from_hwfit(system)
         if vram > 0:
-            return max(8, int(round(vram)))
+            gb = max(8, int(round(vram)))
+            logger.info(
+                "[auto_stack] hwfit vram=%s GB (gpu=%s) -> profile %s",
+                gb,
+                system.get("gpu_name"),
+                load_local_llm_router().profile_for_vram_gb(gb),
+            )
+            return gb
     except Exception as exc:
         logger.debug("auto_stack vram detect failed: %s", exc)
+    logger.warning("[auto_stack] hwfit detect failed; falling back to 16 GB profile")
     return 16
 
 

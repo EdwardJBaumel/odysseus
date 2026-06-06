@@ -127,6 +127,19 @@ def test_check_auto_stack_ready_no_endpoint():
     assert exc.value.code == "no_endpoint"
 
 
+def test_vram_gb_from_hwfit_uses_per_gpu_not_total():
+    from src.auto_stack_router import _vram_gb_from_hwfit
+
+    # 2x 8 GB: total 16 but Ollama uses one card → 8 GB tier
+    system = {
+        "gpu_vram_gb": 16.0,
+        "gpu_groups": [
+            {"vram_each": 8.0, "count": 2, "vram_total": 16.0},
+        ],
+    }
+    assert _vram_gb_from_hwfit(system) == 8.0
+
+
 def test_match_tag_no_fuzzy_cross_model():
     from src.auto_stack_router import _match_tag
 
