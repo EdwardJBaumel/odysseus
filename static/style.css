@@ -2693,6 +2693,16 @@ body.bg-pattern-sparkles {
       user-select: none;
       margin-right: 2px;
     }
+    .app-build-stamp {
+      font-size: 0.85em;
+      font-weight: 400;
+      color: color-mix(in srgb, var(--fg) 28%, transparent);
+      white-space: nowrap;
+      user-select: none;
+      margin-right: 4px;
+      font-family: ui-monospace, monospace;
+    }
+    .app-build-stamp:empty { display: none; }
     /* Model picker — input bar drop-up */
     .model-picker-wrap {
       position: relative;

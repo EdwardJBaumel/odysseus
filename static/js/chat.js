@@ -111,7 +111,10 @@ import {
     roleEl.textContent = label + ' ';
     _applyModelColor(roleEl, actual || req);
     if (_isAutoStackModel(req) && actual && !_isAutoStackModel(actual)) {
-      roleEl.title = AUTO_SELECTING_LABEL + ' → ' + actual;
+      const reasons = Array.isArray(opts.routeReasons) ? opts.routeReasons.filter(Boolean) : [];
+      roleEl.title = reasons.length
+        ? reasons.join(' · ')
+        : (_shortModel(actual) || actual);
       _noteHolderResolvedModel(roleEl, actual);
     } else if (req && actual && !_sameModelName(req, actual)) {
       roleEl.title = req + ' -> ' + actual + (opts.reason ? ': ' + opts.reason : '');
@@ -1910,7 +1913,7 @@ import {
                       _noteHolderResolvedModel(_targetHolder, json.model);
                       if (!_isAutoStackModel(json.model)) _activeStreamModel = json.model;
                       if (json.auto_stack || _isAutoStackModel(_reqModel)) {
-                        noteAutoResolvedModel(json.model);
+                        noteAutoResolvedModel(json.model, json.route_reasons);
                       }
                     }
                     if (json.suffix) _targetHolder._roleSuffix = json.suffix;
@@ -1922,10 +1925,14 @@ import {
                         suffix: _targetHolder._roleSuffix,
                         characterName: _targetHolder._characterName,
                         reason: json.mode_label && json.auto_stack ? json.mode_label : undefined,
+                        routeReasons: json.route_reasons,
                       });
                     }
                   }
                   if (json.auto_stack || _isAutoStackModel(_reqModel)) {
+                    if (json.model && spinner) {
+                      spinner.updateMessage(_shortModel(json.model) + ' · Generating');
+                    }
                     _spinnerToGeneratingIfSelecting();
                   } else {
                     const _noTextYet = roundHolder ? !roundText : !accumulated;

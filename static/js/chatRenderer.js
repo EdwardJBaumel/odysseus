@@ -631,9 +631,14 @@ function _showRoleModelInfoPopup(roleEl) {
       html += '<div><span class="ctx-label">Max tokens</span> ' + _mt.toLocaleString() + ' <span style="opacity:0.4">(configured)</span></div>';
     }
   }
-  if (info && info.input != null) html += '<div><span class="ctx-label">Input</span> $' + info.input.toFixed(2) + ' / 1M</div>';
-  if (info && info.output != null) html += '<div><span class="ctx-label">Output</span> $' + info.output.toFixed(2) + ' / 1M</div>';
-  if (!info) html += '<div style="opacity:0.4;font-size:0.85em;margin-top:4px;">No pricing data available</div>';
+  const _isLocal = isLocalEndpoint(_epUrl);
+  if (_isLocal) {
+    html += '<div><span class="ctx-label">Cost</span> Free (local)</div>';
+  } else {
+    if (info && info.input != null) html += '<div><span class="ctx-label">Input</span> $' + info.input.toFixed(2) + ' / 1M</div>';
+    if (info && info.output != null) html += '<div><span class="ctx-label">Output</span> $' + info.output.toFixed(2) + ' / 1M</div>';
+    if (!info) html += '<div style="opacity:0.4;font-size:0.85em;margin-top:4px;">No pricing data available</div>';
+  }
   popup.innerHTML = html;
   const rect = roleEl.getBoundingClientRect();
   popup.style.top = (rect.bottom + 4) + 'px';

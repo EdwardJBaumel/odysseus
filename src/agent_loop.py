@@ -1738,22 +1738,17 @@ async def stream_agent_loop(
         _round_stack_fb = list(fallbacks or [])
         if auto_stack_active:
             from src.auto_stack_router import (
-                hint_for_agent_round,
                 resolve_auto_stack,
                 stack_fallback_candidates,
             )
             try:
                 _route_prompt = _extract_last_user_message(messages) or ""
-                _as_hint = hint_for_agent_round(
-                    prompt=_route_prompt,
-                    relevant_tools=_relevant_tools,
-                )
                 _as_res = resolve_auto_stack(
                     prompt=_route_prompt,
                     endpoint_url=_anchor_url,
                     headers=headers,
                     owner=owner,
-                    hint=_as_hint,
+                    mode="agent",
                 )
                 endpoint_url = _as_res.endpoint_url
                 model = _as_res.model
@@ -1766,7 +1761,7 @@ async def stream_agent_loop(
                     owner=owner,
                 )
                 from src.constants import AUTO_SELECT_LABEL, AUTO_STACK_MODEL_ID
-                yield f'data: {json.dumps({"type": "model_resolved", "model": model, "requested_model": AUTO_STACK_MODEL_ID, "tier": _as_res.tier, "round": round_num, "auto_stack": True, "mode_label": AUTO_SELECT_LABEL})}\n\n'
+                yield f'data: {json.dumps({"type": "model_resolved", "model": model, "requested_model": AUTO_STACK_MODEL_ID, "tier": _as_res.tier, "round": round_num, "auto_stack": True, "mode_label": AUTO_SELECT_LABEL, "route_reasons": list(_as_res.route_reasons)})}\n\n'
             except Exception as _as_err:
                 yield f'event: error\ndata: {json.dumps({"error": f"Auto (Local LLMs): {_as_err}"})}\n\n'
                 break

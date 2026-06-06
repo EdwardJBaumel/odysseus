@@ -96,17 +96,20 @@ let _autoSelectingDefault = false;
 let _splitStackAvailable = true;
 /** Last model Auto routed to (display-only while session stays on __auto_stack__). */
 let _lastAutoResolvedModel = '';
+let _lastAutoRouteReasons = [];
 
 /** Called when SSE reports the resolved upstream model for an Auto session. */
-export function noteAutoResolvedModel(model) {
+export function noteAutoResolvedModel(model, reasons) {
   const name = (model || '').trim();
   if (!name || name === AUTO_STACK_MODEL_ID) return;
   _lastAutoResolvedModel = name;
+  _lastAutoRouteReasons = Array.isArray(reasons) ? reasons.filter(Boolean) : [];
   updateModelPicker();
 }
 
 export function clearAutoResolvedModel() {
   _lastAutoResolvedModel = '';
+  _lastAutoRouteReasons = [];
 }
 
 async function _refreshSplitStackStatus() {
@@ -983,7 +986,10 @@ export function updateModelPicker() {
   }
 
   const isAutoLabel = modelId === AUTO_STACK_MODEL_ID;
-  if (!isAutoLabel) _lastAutoResolvedModel = '';
+  if (!isAutoLabel) {
+    _lastAutoResolvedModel = '';
+    _lastAutoRouteReasons = [];
+  }
 
   const _shortTag = (id) => (id ? id.split('/').pop() : '');
   let displayName;
@@ -1007,6 +1013,9 @@ export function updateModelPicker() {
     if (!readiness.ok) autoTitle = readiness.message;
     else if (_lastAutoResolvedModel) {
       autoTitle = `${AUTO_SELECT_LABEL} → ${_lastAutoResolvedModel}`;
+      if (_lastAutoRouteReasons.length) {
+        autoTitle += '\n' + _lastAutoRouteReasons.join(' · ');
+      }
     }
   }
   label.title = isAutoLabel ? autoTitle : '';

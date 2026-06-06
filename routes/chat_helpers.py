@@ -14,7 +14,12 @@ from core.database import Session as DBSession, ModelEndpoint
 from src.llm_core import normalize_model_id
 from src.endpoint_resolver import normalize_base
 from src.constants import AUTO_STACK_MODEL_ID
-from src.auto_stack_router import is_auto_stack_model
+from src.auto_stack_router import (
+    AutoStackNotReady,
+    is_auto_stack_active,
+    is_auto_stack_model,
+    resolve_auto_stack,
+)
 from src.context_compactor import maybe_compact, trim_for_context
 from src.auth_helpers import get_current_user
 from src.prompt_security import untrusted_context_message
@@ -156,9 +161,26 @@ async def auto_name_session(session_manager, sess):
             return
 
         owner = getattr(sess, "owner", None)
-        t_url, t_model, t_headers = resolve_task_endpoint(
-            sess.endpoint_url, sess.model, sess.headers, owner=owner,
-        )
+        if is_auto_stack_model(sess.model):
+            if not is_auto_stack_active(sess):
+                logger.debug("[auto-name] Auto stack inactive, skipping")
+                return
+            try:
+                res = resolve_auto_stack(
+                    prompt=first_msg or "New chat",
+                    endpoint_url=sess.endpoint_url,
+                    headers=sess.headers,
+                    owner=owner,
+                    mode="chat",
+                )
+                t_url, t_model, t_headers = res.endpoint_url, res.model, res.headers
+            except (AutoStackNotReady, ValueError, RuntimeError) as exc:
+                logger.debug("[auto-name] Auto stack resolve failed, skipping: %s", exc)
+                return
+        else:
+            t_url, t_model, t_headers = resolve_task_endpoint(
+                sess.endpoint_url, sess.model, sess.headers, owner=owner,
+            )
         if not t_model:
             logger.debug("[auto-name] No model provided, skipping")
             return

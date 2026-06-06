@@ -43,7 +43,6 @@ from src.action_intents import classify_tool_intent as _classify_tool_intent
 from src.auto_stack_router import (
     AutoStackNotReady,
     check_auto_stack_ready,
-    hint_for_chat,
     is_auto_stack_active,
     is_auto_stack_model,
     resolve_auto_stack,
@@ -882,7 +881,7 @@ def setup_chat_routes(
                         endpoint_url=sess.endpoint_url,
                         headers=sess.headers,
                         owner=_user,
-                        hint=hint_for_chat(message or ""),
+                        mode="chat",
                     )
                 except Exception as exc:
                     yield f'data: {json.dumps({"delta": f"Auto (Local LLMs): {exc}"})}\n\n'
@@ -902,6 +901,7 @@ def setup_chat_routes(
                     "auto_stack": True,
                     "tier": _auto_res.tier,
                     "mode_label": AUTO_SELECT_LABEL,
+                    "route_reasons": list(_auto_res.route_reasons),
                 }
             else:
                 _display_model = sess.model
@@ -1106,6 +1106,26 @@ def setup_chat_routes(
                         _max_rounds = _DEFAULT_ROUNDS
                     _max_rounds = max(1, min(_max_rounds, 200))
 
+                    # Resolve Auto before agent prep (tool RAG, context trim) so the
+                    # UI can show the real model while "Selecting model..." spins.
+                    if _auto_stack:
+                        try:
+                            from src.auto_stack_router import resolve_auto_stack
+                            from src.constants import AUTO_SELECT_LABEL
+                            _agent_auto_res = resolve_auto_stack(
+                                prompt=message or "",
+                                endpoint_url=sess.endpoint_url,
+                                headers=sess.headers,
+                                owner=_user,
+                                mode="agent",
+                            )
+                            yield f'data: {json.dumps({"type": "model_info", "model": _agent_auto_res.model, "requested_model": sess.model, "auto_stack": True, "tier": _agent_auto_res.tier, "mode_label": AUTO_SELECT_LABEL, "route_reasons": list(_agent_auto_res.route_reasons)})}\n\n'
+                        except Exception as exc:
+                            yield f'data: {json.dumps({"delta": f"Auto (Local LLMs): {exc}"})}\n\n'
+                            yield "data: [DONE]\n\n"
+                            _active_streams.pop(session, None)
+                            return
+
                     async for chunk in stream_agent_loop(
                         sess.endpoint_url,
                         sess.model,
@@ -1149,6 +1169,7 @@ def setup_chat_routes(
                                     "rounds_exhausted",
                                     "ask_user",
                                     "plan_update",
+                                    "model_info",
                                     "model_resolved",
                                 ):
                                     if data.get("type") == "agent_step":
